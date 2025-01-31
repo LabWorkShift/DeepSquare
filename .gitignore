@@ -9,8 +9,8 @@ Win32/
 
 # IDE specific files
 .vs/
-.vscode/
 *.sln
+.vscode/
 *.vcxproj
 *.vcxproj.filters
 *.vcxproj.user

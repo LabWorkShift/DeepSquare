@@ -1,6 +1,6 @@
 # DeepSquare
 
-A powerful UCI-compatible chess engine written in modern C++.
+A UCI-compatible chess engine written in modern C++.
 
 ## Features
 
