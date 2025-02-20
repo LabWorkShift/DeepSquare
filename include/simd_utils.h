@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <array>
 
+// CPU Feature Detection
 #if defined(__APPLE__)
     #include <TargetConditionals.h>
     #if TARGET_CPU_X86_64
@@ -19,6 +20,34 @@
     #ifdef _MSC_VER
         #pragma warning(disable: 4324)  // Disable padding warning
     #endif
+#elif defined(__linux__)
+    #if defined(__x86_64__) || defined(__i386__)
+        #include <cpuid.h>
+        #include <immintrin.h>
+        static bool check_avx2() {
+            unsigned int eax, ebx, ecx, edx;
+            if (__get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
+                if (ecx & bit_AVX) {
+                    if (__get_cpuid_max(0, &eax) >= 7) {
+                        __cpuid_count(7, 0, eax, ebx, ecx, edx);
+                        return (ebx & bit_AVX2) != 0;
+                    }
+                }
+            }
+            return false;
+        }
+        #if defined(__AVX2__)
+            #define HAS_AVX2 1
+        #endif
+    #elif defined(__aarch64__)
+        #include <arm_neon.h>
+        #define HAS_NEON 1
+    #endif
+#endif
+
+// Fallback if no SIMD detected
+#if !defined(HAS_AVX2) && !defined(HAS_NEON)
+    #define NO_SIMD 1
 #endif
 
 namespace simd {
