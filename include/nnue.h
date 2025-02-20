@@ -3,11 +3,11 @@
 
 #include "board.h"
 #include "move.h"
+#include "simd_utils.h"
 #include <array>
 #include <vector>
 #include <string>
 #include <memory>
-#include <immintrin.h>
 
 #ifdef _MSC_VER
 #pragma warning(disable: 4324)
@@ -66,7 +66,7 @@ private:
     int getFeatureIndex(const Piece& piece, int square, int kingSquare, bool perspective) const;
     void initializeAccumulator(const Board& board, bool perspective);
     void applyBatchActivation(int16_t* values, size_t size);
-    __m256i* getSIMDBuffer();
+    simd::vec_type* getSIMDBuffer();
 };
 
 #endif
