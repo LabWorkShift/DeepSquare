@@ -3,6 +3,8 @@
 #include <cmath>
 #include <algorithm>
 
+using namespace simd;
+
 NNUE::NNUE() : accumulatorStackSize(0) {
     accumulator[0].computed = false;
     accumulator[1].computed = false;
@@ -108,26 +110,21 @@ void NNUE::updateAccumulator(const Board& board, const Move& move) {
         int fromIdx = getFeatureIndex(movedPiece, fromSquare, kingSquare, perspective);
         int toIdx = getFeatureIndex(movedPiece, toSquare, kingSquare, perspective);
         
-        __m256i* accPtr = reinterpret_cast<__m256i*>(accumulator[perspective].values.data());
-        __m256i* weightFromPtr = reinterpret_cast<__m256i*>(featureWeights[fromIdx].weights.data());
-        __m256i* weightToPtr = reinterpret_cast<__m256i*>(featureWeights[toIdx].weights.data());
-        
         for(int i = 0; i < HIDDEN_SIZE / 16; ++i) {
-            __m256i acc = _mm256_load_si256(accPtr + i);
-            __m256i fromW = _mm256_load_si256(weightFromPtr + i);
-            __m256i toW = _mm256_load_si256(weightToPtr + i);
+            vec_type acc = VectorOps::load(accumulator[perspective].values.data() + i * 16);
+            vec_type fromW = VectorOps::load(featureWeights[fromIdx].weights.data() + i * 16);
+            vec_type toW = VectorOps::load(featureWeights[toIdx].weights.data() + i * 16);
             
-            acc = _mm256_sub_epi16(acc, fromW);
-            acc = _mm256_add_epi16(acc, toW);
+            acc = VectorOps::sub(acc, fromW);
+            acc = VectorOps::add(acc, toW);
             
             if(capturedPiece.getType() != EMPTY) {
                 int capturedIdx = getFeatureIndex(capturedPiece, toSquare, kingSquare, perspective);
-                __m256i* weightCapturedPtr = reinterpret_cast<__m256i*>(featureWeights[capturedIdx].weights.data());
-                __m256i capturedW = _mm256_load_si256(weightCapturedPtr + i);
-                acc = _mm256_sub_epi16(acc, capturedW);
+                vec_type capturedW = VectorOps::load(featureWeights[capturedIdx].weights.data() + i * 16);
+                acc = VectorOps::sub(acc, capturedW);
             }
             
-            _mm256_store_si256(accPtr + i, acc);
+            VectorOps::store(accumulator[perspective].values.data() + i * 16, acc);
         }
     }
 }
@@ -153,25 +150,15 @@ int NNUE::evaluate(const Board& board, bool perspective) {
         initializeAccumulator(board, perspective);
     }
     
-    __m256i* accPtr = reinterpret_cast<__m256i*>(accumulator[perspective].values.data());
-    __m256i* outPtr = reinterpret_cast<__m256i*>(outputWeights.data());
-    
-    __m256i sum = _mm256_setzero_si256();
+    int32_t finalSum = 0;
     for(int i = 0; i < HIDDEN_SIZE / 16; ++i) {
-        __m256i acc = _mm256_load_si256(accPtr + i);
-        __m256i weight = _mm256_load_si256(outPtr + i);
-        __m256i prod = _mm256_mulhi_epi16(acc, weight);
-        sum = _mm256_add_epi32(sum, _mm256_unpackhi_epi16(prod, prod));
-        sum = _mm256_add_epi32(sum, _mm256_unpacklo_epi16(prod, prod));
+        vec_type acc = VectorOps::load(accumulator[perspective].values.data() + i * 16);
+        vec_type weight = VectorOps::load(outputWeights.data() + i * 16);
+        vec_type prod = VectorOps::mul(acc, weight);
+        finalSum += VectorOps::horizontal_add(prod);
     }
     
-    alignas(32) int32_t temp[8];
-    _mm256_store_si256(reinterpret_cast<__m256i*>(temp), sum);
-    
-    int32_t finalSum = temp[0] + temp[1] + temp[2] + temp[3] + 
-                      temp[4] + temp[5] + temp[6] + temp[7];
     finalSum = finalSum / 64 + outputBias;
-    
     return perspective ? finalSum : -finalSum;
 }
 
@@ -205,7 +192,6 @@ void NNUE::initializeAccumulator(const Board& board, bool perspective) {
     
     accumulator[perspective].kingSquare = kingSquare;
     
-    __m256i* accPtr = reinterpret_cast<__m256i*>(accumulator[perspective].values.data());
     for(int y = 0; y < 8; ++y) {
         for(int x = 0; x < 8; ++x) {
             Piece piece = board.getPiece(x, y);
@@ -213,12 +199,11 @@ void NNUE::initializeAccumulator(const Board& board, bool perspective) {
                 int square = y * 8 + x;
                 int featureIndex = getFeatureIndex(piece, square, kingSquare, perspective);
                 
-                __m256i* weightPtr = reinterpret_cast<__m256i*>(featureWeights[featureIndex].weights.data());
                 for(int i = 0; i < HIDDEN_SIZE / 16; ++i) {
-                    __m256i acc = _mm256_load_si256(accPtr + i);
-                    __m256i weight = _mm256_load_si256(weightPtr + i);
-                    acc = _mm256_add_epi16(acc, weight);
-                    _mm256_store_si256(accPtr + i, acc);
+                    vec_type acc = VectorOps::load(accumulator[perspective].values.data() + i * 16);
+                    vec_type weight = VectorOps::load(featureWeights[featureIndex].weights.data() + i * 16);
+                    acc = VectorOps::add(acc, weight);
+                    VectorOps::store(accumulator[perspective].values.data() + i * 16, acc);
                 }
             }
         }
@@ -229,15 +214,15 @@ void NNUE::initializeAccumulator(const Board& board, bool perspective) {
 }
 
 void NNUE::applyBatchActivation(int16_t* values, size_t size) {
-    __m256i* ptr = reinterpret_cast<__m256i*>(values);
     for(size_t i = 0; i < size / 16; ++i) {
-        __m256i val = _mm256_load_si256(ptr + i);
-        __m256i zero = _mm256_setzero_si256();
-        val = _mm256_max_epi16(_mm256_min_epi16(val, _mm256_set1_epi16(32767)), zero);
-        _mm256_store_si256(ptr + i, val);
+        vec_type val = VectorOps::load(values + i * 16);
+        vec_type zero = VectorOps::zero();
+        vec_type max_val = VectorOps::set1(32767);
+        val = VectorOps::min(VectorOps::max(val, zero), max_val);
+        VectorOps::store(values + i * 16, val);
     }
 }
 
-__m256i* NNUE::getSIMDBuffer() {
-    return reinterpret_cast<__m256i*>(simdBuffer.get());
+simd::vec_type* NNUE::getSIMDBuffer() {
+    return reinterpret_cast<simd::vec_type*>(simdBuffer.get());
 } 
